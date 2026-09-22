@@ -12,6 +12,7 @@ from scripts.f1tenth.campaign import (
     finalize_campaign,
     freeze_campaign,
     initialize_campaign,
+    load_manifest,
     load_state,
     prepare_iteration,
     run_iteration,
@@ -94,7 +95,12 @@ def write_candidate(directory: Path, name: str, development: int, validation: in
     )
 
 
-def initialize(tmp_path: Path, *, max_iterations: int = 2) -> tuple[Path, str]:
+def initialize(
+    tmp_path: Path,
+    *,
+    max_iterations: int = 2,
+    task: str = "levine_privileged",
+) -> tuple[Path, str]:
     initial = tmp_path / "initial.py"
     initial.write_text(
         "# TEST_DEVELOPMENT=0\n# TEST_VALIDATION=0\n"
@@ -104,13 +110,22 @@ def initialize(tmp_path: Path, *, max_iterations: int = 2) -> tuple[Path, str]:
     state = initialize_campaign(
         campaign=campaign,
         initial_controller=initial,
-        config=Path("env_configs/f1tenth/levine_privileged.yaml"),
         model="gpt-5.5",
         reasoning_effort="high",
         max_iterations=max_iterations,
+        task=task,
         evaluator=fake_evaluator,
     )
     return campaign, state["incumbent"]["code_sha256"]
+
+
+@pytest.mark.parametrize("task", ["levine_privileged", "spielberg_privileged"])
+def test_campaign_records_selected_task_and_assets(tmp_path: Path, task: str) -> None:
+    campaign, _ = initialize(tmp_path, task=task)
+    manifest = load_manifest(campaign)
+
+    assert manifest["task"] == task
+    assert all(manifest["map_assets"].values())
 
 
 def test_campaign_accepts_only_verified_improvement_and_finalizes_once(tmp_path: Path) -> None:

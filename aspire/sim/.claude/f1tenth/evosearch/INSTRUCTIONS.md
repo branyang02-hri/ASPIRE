@@ -1,8 +1,12 @@
 # F1TENTH Evolutionary Search
 
 This is the canonical ASPIRE experiment protocol for improving a privileged
-Levine controller. The coding agent proposes programs; the campaign harness
+F1TENTH lap controller. The coding agent proposes programs; the campaign harness
 owns evaluation, selection, lineage, and held-out access.
+
+Select exactly one task for a lineage: `levine_privileged` or
+`spielberg_privileged`. The task fixes the map, reference path, objective, and
+configuration for the entire campaign.
 
 ## Fixed Contract
 
@@ -41,11 +45,13 @@ skills, state, or results.
 
 ```bash
 CAMPAIGN=outputs/f1tenth/aspire-campaigns/<campaign-id>
+TASK=levine_privileged  # or spielberg_privileged
 
 PYGLET_HEADLESS=true .venv-f1tenth/bin/python \
   scripts/f1tenth/campaign.py init \
   --campaign "$CAMPAIGN" \
   --initial-controller .claude/f1tenth/evosearch/initial_controller.py \
+  --task "$TASK" \
   --model gpt-5.5 \
   --reasoning-effort high \
   --max-iterations 5
@@ -120,6 +126,7 @@ authentication. It does not accept or persist an API key:
 PYGLET_HEADLESS=true .venv-f1tenth/bin/python \
   scripts/f1tenth/run_codex_campaign.py \
   --campaign outputs/f1tenth/aspire-campaigns/<campaign-id> \
+  --task spielberg_privileged \
   --model gpt-5.5 \
   --reasoning-effort high \
   --max-iterations 5

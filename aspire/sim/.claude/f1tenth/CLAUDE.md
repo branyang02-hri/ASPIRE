@@ -1,16 +1,17 @@
 # F1TENTH Suite Guide
 
-The initial F1TENTH integration is intentionally privileged. Generated programs may use LiDAR, global pose, velocity, collision state, lap progress, the Levine reference path, and overhead rendering. Results from this configuration measure ASPIRE integration and program improvement, not LiDAR-only autonomy or real-vehicle transfer.
+The initial F1TENTH integration is intentionally privileged. Generated programs may use LiDAR, global pose, velocity, collision state, lap progress, the active track reference path, and overhead rendering. Results from these configurations measure ASPIRE integration and program improvement, not LiDAR-only autonomy or real-vehicle transfer.
 
 ## Environment
 
 - Python: `.venv-f1tenth/bin/python`
 - Setup: `bash scripts/f1tenth/setup_f1tenth.sh`
-- Config: `env_configs/f1tenth/levine_privileged.yaml`
+- Tasks: `levine_privileged`, `spielberg_privileged`
+- Configs: `env_configs/f1tenth/{levine,spielberg}_privileged.yaml`
 - Simulator: pinned `cap/third_party/f1tenth_gym` submodule
-- Canonical assets: `assets/f1tenth/levine/`
+- Canonical assets: `assets/f1tenth/{levine,spielberg}/`
 
-Do not substitute the F1TENTH Gym bundled Levine PGM. The suite uses the canonical PNG and YAML tracked in ASPIRE and checks their hashes at runtime.
+The suite uses the canonical PNG and YAML tracked in ASPIRE and checks each selected track's hashes at runtime.
 
 ## Seed Partitions
 

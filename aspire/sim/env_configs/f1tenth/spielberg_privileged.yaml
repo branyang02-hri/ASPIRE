@@ -1,16 +1,16 @@
 env:
-  _target_: aspire.sim.cap.envs.tasks.f1tenth.levine_lap.F1TenthLevineCodeEnv
+  _target_: aspire.sim.cap.envs.tasks.f1tenth.spielberg_lap.F1TenthSpielbergCodeEnv
   cfg:
     _target_: aspire.sim.cap.envs.tasks.base.CodeExecEnvConfig
     low_level:
-      _target_: aspire.sim.cap.envs.simulators.f1tenth.F1TenthLevineLowLevel
-      max_steps: 18000
+      _target_: aspire.sim.cap.envs.simulators.f1tenth.F1TenthSpielbergLowLevel
+      max_steps: 45000
       control_repeat: 5
       seed: 101
       privileged: true
       enable_render: true
       render_size: 384
-      video_stride: 4
+      video_stride: 12
     privileged: true
     enable_render: true
     apis:
@@ -21,6 +21,6 @@ use_visual_feedback: false
 use_img_differencing: false
 use_parallel_ensemble: false
 use_multimodel: false
-output_dir: ./outputs/f1tenth/levine_privileged
+output_dir: ./outputs/f1tenth/spielberg_privileged
 trials: 1
 num_workers: 1

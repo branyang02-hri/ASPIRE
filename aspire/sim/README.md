@@ -21,7 +21,7 @@ For the paper overview and project-level context, see [the repository README](..
 | LIBERO-PRO, LIBERO-90, LIBERO-Long | `.venv-libero` | Python 3.12; uses upstream LIBERO plus its pinned Robosuite fork. |
 | Robosuite | `.venv-robosuite` | Python 3.10; standalone Robosuite stack. |
 | BEHAVIOR-1K | External Isaac Sim environment | Uses the BEHAVIOR installer and is excluded from the uv workspace. |
-| F1TENTH | `.venv-f1tenth` | Python 3.10; CPU simulator with canonical Levine assets and a privileged ASPIRE API. |
+| F1TENTH | `.venv-f1tenth` | Python 3.10; CPU simulator with canonical Levine and Spielberg assets and a privileged ASPIRE API. |
 
 ## Working Conventions
 
@@ -311,7 +311,7 @@ PYGLET_HEADLESS=true .venv-f1tenth/bin/python scripts/f1tenth/evaluate_controlle
   --output outputs/f1tenth/smoke
 ```
 
-The initial configuration deliberately exposes full simulator state and the
+The initial configurations deliberately expose full simulator state and the
 reference path. It verifies the native integration and ASPIRE workflow; it is
 not a LiDAR-only or real-world-transfer benchmark. See
 `.claude/f1tenth/CLAUDE.md` for its seed partitions and experiment protocol.
@@ -323,6 +323,7 @@ used by the other ASPIRE suites:
 PYGLET_HEADLESS=true .venv-f1tenth/bin/python \
   scripts/f1tenth/run_codex_campaign.py \
   --campaign outputs/f1tenth/aspire-campaigns/<campaign-id> \
+  --task spielberg_privileged \
   --model gpt-5.5 --reasoning-effort high --max-iterations 5
 ```
 

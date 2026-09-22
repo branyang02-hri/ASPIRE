@@ -41,7 +41,7 @@ class F1TenthControlApi(ApiBase):
         return self._env.get_observation()
 
     def get_reference_path(self) -> np.ndarray:
-        """Return the privileged Levine centerline as an ``(N, 2)`` array."""
+        """Return the active track centerline as an ``(N, 2)`` array."""
         return self._env.get_reference_path()
 
     def drive(

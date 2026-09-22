@@ -25,18 +25,30 @@ from scripts.f1tenth.evaluate_controller import (
 )
 
 
-DEFAULT_CONFIG = Path("env_configs/f1tenth/levine_privileged.yaml")
+DEFAULT_TASK = "levine_privileged"
+TASKS = {
+    "levine_privileged": {
+        "config": Path("env_configs/f1tenth/levine_privileged.yaml"),
+        "map_base": Path("assets/f1tenth/levine/levine"),
+        "reference_path": Path("assets/f1tenth/levine/levine_reference_path.csv"),
+    },
+    "spielberg_privileged": {
+        "config": Path("env_configs/f1tenth/spielberg_privileged.yaml"),
+        "map_base": Path("assets/f1tenth/spielberg/Spielberg_map"),
+        "reference_path": Path("assets/f1tenth/spielberg/spielberg_reference_path.csv"),
+    },
+}
 DEFAULT_SKILLS = Path(".claude/f1tenth/skills")
 DEVELOPMENT_SEEDS = list(range(101, 111))
 VALIDATION_SEEDS = list(range(201, 206))
 HELD_OUT_SEEDS = list(range(301, 306))
 CANDIDATE_NAMES = [f"candidate_{letter}" for letter in "ABCDEFGH"]
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 EPSILON = 1e-6
 BANNED_CANDIDATE_TEXT = (
     "ORACLE_CODE",
     "oracle_code",
-    "aspire.sim.cap.envs.tasks.f1tenth.levine_lap",
+    "aspire.sim.cap.envs.tasks.f1tenth.",
 )
 
 Evaluator = Callable[..., dict[str, Any]]
@@ -85,6 +97,27 @@ def combined_hash(value: Any) -> str:
     ).hexdigest()
 
 
+def task_assets(task: str) -> tuple[Path, Path, Path]:
+    if task not in TASKS:
+        raise ValueError(f"unknown F1TENTH task: {task}")
+    spec = TASKS[task]
+    map_base = SIM_ROOT / spec["map_base"]
+    return (
+        map_base.with_suffix(".png"),
+        map_base.with_suffix(".yaml"),
+        SIM_ROOT / spec["reference_path"],
+    )
+
+
+def task_asset_hashes(task: str) -> dict[str, str]:
+    png, yaml_path, reference_path = task_assets(task)
+    return {
+        "png_sha256": sha256_file(png),
+        "yaml_sha256": sha256_file(yaml_path),
+        "reference_path_sha256": sha256_file(reference_path),
+    }
+
+
 def load_manifest(campaign: Path) -> dict[str, Any]:
     path = campaign / "manifest.json"
     if not path.is_file():
@@ -111,6 +144,7 @@ def write_report(campaign: Path, state: dict[str, Any]) -> None:
         f"# F1TENTH Campaign: {manifest['campaign_id']}",
         "",
         f"- Status: {state['status']}",
+        f"- Task: {manifest.get('task', DEFAULT_TASK)}",
         f"- Model: {manifest['agent']['model']}",
         f"- Reasoning effort: {manifest['agent']['reasoning_effort']}",
         f"- Iterations completed: {state['iterations_completed']}/{manifest['max_iterations']}",
@@ -180,16 +214,20 @@ def initialize_campaign(
     *,
     campaign: Path,
     initial_controller: Path,
-    config: Path,
     model: str,
     reasoning_effort: str,
     max_iterations: int,
+    task: str = DEFAULT_TASK,
+    config: Path | None = None,
     evaluator: Evaluator = evaluate_controller,
 ) -> dict[str, Any]:
     """Create a fresh lineage and establish development/validation baselines."""
     campaign = campaign.resolve()
     initial_controller = initial_controller.resolve()
-    config = config.resolve()
+    if task not in TASKS:
+        raise ValueError(f"unknown F1TENTH task: {task}")
+    config = config or TASKS[task]["config"]
+    config = config.resolve() if config.is_absolute() else (SIM_ROOT / config).resolve()
     if campaign.exists() and any(campaign.iterdir()):
         raise ValueError(f"campaign path is not empty: {campaign}")
     if not initial_controller.is_file():
@@ -217,7 +255,6 @@ def initialize_campaign(
     shutil.copytree(source_skills, working_skills)
     (working_skills / "promotions").mkdir(exist_ok=True)
 
-    map_base = SIM_ROOT / "assets/f1tenth/levine/levine"
     prompt_paths = [
         SIM_ROOT / ".claude/f1tenth/evosearch/main-agent-prompt.md",
         SIM_ROOT / ".claude/f1tenth/evosearch/subagent-prompt.md",
@@ -226,15 +263,12 @@ def initialize_campaign(
     manifest = {
         "schema_version": SCHEMA_VERSION,
         "campaign_id": campaign.name,
+        "task": task,
         "created_at": now(),
         "git_commit": git_commit(),
         "config_path": rel(config),
         "config_sha256": sha256_file(config),
-        "map_assets": {
-            "png_sha256": sha256_file(map_base.with_suffix(".png")),
-            "yaml_sha256": sha256_file(map_base.with_suffix(".yaml")),
-            "reference_path_sha256": sha256_file(map_base.parent / "levine_reference_path.csv"),
-        },
+        "map_assets": task_asset_hashes(task),
         "seed_partitions": {
             "development": DEVELOPMENT_SEEDS,
             "validation": VALIDATION_SEEDS,
@@ -553,8 +587,10 @@ def run_iteration(
     state["iterations_completed"] += 1
     state["prepared_iteration"] = None
     solved = (
-        state["incumbent"]["development"]["successes"] == len(DEVELOPMENT_SEEDS)
-        and state["incumbent"]["validation"]["successes"] == len(VALIDATION_SEEDS)
+        state["incumbent"]["development"]["successes"]
+        == len(manifest["seed_partitions"]["development"])
+        and state["incumbent"]["validation"]["successes"]
+        == len(manifest["seed_partitions"]["validation"])
     )
     budget_exhausted = state["iterations_completed"] >= manifest["max_iterations"]
     if solved or budget_exhausted:
@@ -592,6 +628,7 @@ def freeze_campaign(campaign: Path, reason: str) -> dict[str, Any]:
     shutil.copy2(incumbent, frozen_code)
     skills_hashes = hash_tree(campaign / "skill-library-working")
     contract = {
+        "task": manifest.get("task", DEFAULT_TASK),
         "controller_sha256": sha256_file(frozen_code),
         "config_sha256": manifest["config_sha256"],
         "map_assets": manifest["map_assets"],
@@ -690,12 +727,12 @@ def verify_campaign(campaign: Path) -> dict[str, Any]:
     config = SIM_ROOT / manifest["config_path"]
     if not config.is_file() or sha256_file(config) != manifest["config_sha256"]:
         errors.append("config hash mismatch")
-    map_base = SIM_ROOT / "assets/f1tenth/levine/levine"
-    current_map_hashes = {
-        "png_sha256": sha256_file(map_base.with_suffix(".png")),
-        "yaml_sha256": sha256_file(map_base.with_suffix(".yaml")),
-        "reference_path_sha256": sha256_file(map_base.parent / "levine_reference_path.csv"),
-    }
+    task = manifest.get("task", DEFAULT_TASK)
+    if task not in TASKS:
+        errors.append("unknown task")
+        current_map_hashes = {}
+    else:
+        current_map_hashes = task_asset_hashes(task)
     if current_map_hashes != manifest["map_assets"]:
         errors.append("map asset hash mismatch")
     incumbent = SIM_ROOT / state["incumbent"]["code_path"]
@@ -740,9 +777,10 @@ def verify_campaign(campaign: Path) -> dict[str, Any]:
         errors.append("held-out evaluation lacks a registered start event")
     if state["status"] == "complete":
         held_out = state.get("held_out") or {}
-        if held_out.get("identity", {}).get("seeds") != HELD_OUT_SEEDS:
+        held_out_seeds = manifest["seed_partitions"]["held_out"]
+        if held_out.get("identity", {}).get("seeds") != held_out_seeds:
             errors.append("held-out seed set mismatch")
-        if held_out.get("trial_count") != len(HELD_OUT_SEEDS):
+        if held_out.get("trial_count") != len(held_out_seeds):
             errors.append("held-out trial count mismatch")
         if not all(
             trial.get("video") and Path(trial["video"]).is_file()
@@ -768,7 +806,8 @@ def main() -> None:
     init = subparsers.add_parser("init")
     init.add_argument("--campaign", type=Path, required=True)
     init.add_argument("--initial-controller", type=Path, required=True)
-    init.add_argument("--config", type=Path, default=DEFAULT_CONFIG)
+    init.add_argument("--task", choices=sorted(TASKS), default=DEFAULT_TASK)
+    init.add_argument("--config", type=Path)
     init.add_argument("--model", default="gpt-5.5")
     init.add_argument("--reasoning-effort", default="high")
     init.add_argument("--max-iterations", type=int, default=5)
@@ -790,10 +829,11 @@ def main() -> None:
         result = initialize_campaign(
             campaign=campaign,
             initial_controller=args.initial_controller,
-            config=args.config,
             model=args.model,
             reasoning_effort=args.reasoning_effort,
             max_iterations=args.max_iterations,
+            task=args.task,
+            config=args.config,
         )
     elif args.command == "prepare":
         result = {"iteration_dir": str(prepare_iteration(campaign))}

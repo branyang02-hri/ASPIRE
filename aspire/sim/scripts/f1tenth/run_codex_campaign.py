@@ -59,7 +59,12 @@ def trace_policy_errors(event_log: Path, campaign: Path) -> list[str]:
     return errors
 
 
-def build_prompt(campaign: Path, initial_controller: Path, max_iterations: int) -> str:
+def build_prompt(
+    campaign: Path,
+    initial_controller: Path,
+    max_iterations: int,
+    task: str,
+) -> str:
     return f"""
 Run a complete, fresh ASPIRE F1TENTH evolutionary-search campaign.
 
@@ -71,6 +76,7 @@ Working root: {SIM_ROOT}
 Campaign path: {campaign}
 Initial controller: {initial_controller}
 Maximum iterations: {max_iterations}
+Task: {task}
 
 Read these files in full before acting:
 - .claude/f1tenth/CLAUDE.md
@@ -90,6 +96,9 @@ held-out seeds until the harness has frozen the final controller. Preserve
 failed candidates and rejected decisions. After the stop condition, freeze,
 finalize the one-time held-out evaluation with videos, run campaign verify,
 and return the campaign report path and concise result.
+
+Pass `--task {task}` to `campaign.py init`. Do not substitute another task or
+configuration.
 """.strip()
 
 
@@ -102,6 +111,11 @@ def main() -> None:
         default=Path(".claude/f1tenth/evosearch/initial_controller.py"),
     )
     parser.add_argument("--max-iterations", type=int, default=5)
+    parser.add_argument(
+        "--task",
+        choices=("levine_privileged", "spielberg_privileged"),
+        default="levine_privileged",
+    )
     parser.add_argument("--model", default="gpt-5.5")
     parser.add_argument("--reasoning-effort", default="high")
     args = parser.parse_args()
@@ -121,7 +135,9 @@ def main() -> None:
     log_dir.mkdir(parents=True, exist_ok=True)
     event_log = log_dir / f"{campaign.name}.jsonl"
     final_message = log_dir / f"{campaign.name}-final.txt"
-    prompt = build_prompt(campaign, initial_controller, args.max_iterations)
+    prompt = build_prompt(
+        campaign, initial_controller, args.max_iterations, args.task
+    )
     command = [
         codex,
         "exec",
@@ -161,6 +177,8 @@ def main() -> None:
             errors.append("campaign model provenance does not match launcher assignment")
         if manifest.get("max_iterations") != args.max_iterations:
             errors.append("campaign iteration budget does not match launcher assignment")
+        if manifest.get("task") != args.task:
+            errors.append("campaign task does not match launcher assignment")
     errors.extend(trace_policy_errors(event_log, campaign))
 
     independent_verification = None
@@ -197,6 +215,7 @@ def main() -> None:
         "model": args.model,
         "reasoning_effort": args.reasoning_effort,
         "max_iterations": args.max_iterations,
+        "task": args.task,
         "codex_version": codex_version,
         "return_code": process.returncode,
         "errors": errors,

@@ -23,16 +23,32 @@ from aspire.sim.cap.envs.base import BaseEnv
 CANONICAL_LEVINE_PNG_SHA256 = "f5983fdc8e1a2395f533502a582089d0c0b76835523f4d21a00982da4af2b29e"
 CANONICAL_LEVINE_YAML_SHA256 = "6c422686da9fdc28ace3613aae31520102225516c2f09aea51b6aedce383c1fe"
 F1TENTH_EFFECTIVE_LEVINE_SHA256 = "234b5bcc50ea02fd3845897f88bbc6066984f200ffb1ed664734d19015b0a315"
+CANONICAL_SPIELBERG_PNG_SHA256 = "3378ea1da231e00b4c41015311f7f3a63fb62420d8c54aaa23b6d1ca7c947e56"
+CANONICAL_SPIELBERG_YAML_SHA256 = "86c0eb7546bb035ee6e0173eddc8a2953f8c079944acd28374856f8cc245f6f1"
+F1TENTH_EFFECTIVE_SPIELBERG_SHA256 = "ff1aba9301b812313c2a13351c8577cb7e69a53cf937eed22f2d5dd907073e30"
 
 
 def _sha256(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
-def canonical_levine_assets() -> tuple[Path, Path]:
+def canonical_track_assets(track: str) -> tuple[Path, Path]:
     sim_root = Path(__file__).resolve().parents[3]
-    base = sim_root / "assets" / "f1tenth" / "levine" / "levine"
-    return base, base.parent / "levine_reference_path.csv"
+    if track == "levine":
+        base = sim_root / "assets" / "f1tenth" / "levine" / "levine"
+        return base, base.parent / "levine_reference_path.csv"
+    if track == "spielberg":
+        base = sim_root / "assets" / "f1tenth" / "spielberg" / "Spielberg_map"
+        return base, base.parent / "spielberg_reference_path.csv"
+    raise ValueError(f"unsupported F1TENTH track: {track}")
+
+
+def canonical_levine_assets() -> tuple[Path, Path]:
+    return canonical_track_assets("levine")
+
+
+def canonical_spielberg_assets() -> tuple[Path, Path]:
+    return canonical_track_assets("spielberg")
 
 
 @dataclass(frozen=True)
@@ -133,13 +149,14 @@ class OrderedLapTracker:
         )
 
 
-class F1TenthLevineLowLevel(BaseEnv):
-    """F1TENTH Levine environment with full simulator telemetry exposed."""
+class F1TenthTrackLowLevel(BaseEnv):
+    """F1TENTH track environment with full simulator telemetry exposed."""
 
     metadata = {"render_modes": ["rgb_array"]}
 
     def __init__(
         self,
+        track: str = "levine",
         map_path: str | None = None,
         reference_path: str | None = None,
         max_steps: int = 18_000,
@@ -153,14 +170,17 @@ class F1TenthLevineLowLevel(BaseEnv):
         video_stride: int = 4,
     ) -> None:
         super().__init__()
-        canonical_map, canonical_reference = canonical_levine_assets()
+        self.track = track
+        canonical_map, canonical_reference = canonical_track_assets(track)
         self.map_base = Path(map_path).expanduser().resolve() if map_path else canonical_map
         if self.map_base.suffix in {".png", ".yaml"}:
             self.map_base = self.map_base.with_suffix("")
         self.reference_path_file = (
             Path(reference_path).expanduser().resolve() if reference_path else canonical_reference
         )
-        self._validate_assets(require_canonical=map_path is None)
+        self._validate_assets(
+            require_canonical=map_path is None and reference_path is None
+        )
 
         self.max_steps = int(max_steps)
         self.control_repeat = int(control_repeat)
@@ -211,9 +231,16 @@ class F1TenthLevineLowLevel(BaseEnv):
             raise FileNotFoundError(f"missing F1TENTH assets: {', '.join(missing)}")
         if require_canonical:
             hashes = (_sha256(png), _sha256(yaml_path))
-            expected = (CANONICAL_LEVINE_PNG_SHA256, CANONICAL_LEVINE_YAML_SHA256)
+            expected_by_track = {
+                "levine": (CANONICAL_LEVINE_PNG_SHA256, CANONICAL_LEVINE_YAML_SHA256),
+                "spielberg": (
+                    CANONICAL_SPIELBERG_PNG_SHA256,
+                    CANONICAL_SPIELBERG_YAML_SHA256,
+                ),
+            }
+            expected = expected_by_track[self.track]
             if hashes != expected:
-                raise RuntimeError("canonical Levine asset hash mismatch")
+                raise RuntimeError(f"canonical {self.track} asset hash mismatch")
 
     @staticmethod
     def _load_reference_path(path: Path) -> np.ndarray:
@@ -494,12 +521,38 @@ class F1TenthLevineLowLevel(BaseEnv):
         self._env = None
 
 
+class F1TenthLevineLowLevel(F1TenthTrackLowLevel):
+    """Canonical Levine specialization."""
+
+    def __init__(self, **kwargs: Any) -> None:
+        super().__init__(track="levine", **kwargs)
+
+
+class F1TenthSpielbergLowLevel(F1TenthTrackLowLevel):
+    """Canonical Spielberg specialization."""
+
+    def __init__(self, **kwargs: Any) -> None:
+        start_poses = kwargs.pop("start_poses", None) or [
+            [-69.31607655352701, 53.75661267858121, 0.041162414851668674],
+            [-69.3181, 53.8066, 0.0562],
+            [-69.3140, 53.7066, 0.0262],
+        ]
+        super().__init__(track="spielberg", start_poses=start_poses, **kwargs)
+
+
 __all__ = [
     "CANONICAL_LEVINE_PNG_SHA256",
     "CANONICAL_LEVINE_YAML_SHA256",
+    "CANONICAL_SPIELBERG_PNG_SHA256",
+    "CANONICAL_SPIELBERG_YAML_SHA256",
     "F1TENTH_EFFECTIVE_LEVINE_SHA256",
+    "F1TENTH_EFFECTIVE_SPIELBERG_SHA256",
     "F1TenthLevineLowLevel",
+    "F1TenthSpielbergLowLevel",
+    "F1TenthTrackLowLevel",
     "LapProgress",
     "OrderedLapTracker",
     "canonical_levine_assets",
+    "canonical_spielberg_assets",
+    "canonical_track_assets",
 ]
