@@ -9,7 +9,7 @@ For the paper overview and project-level context, see [the repository README](..
 | Path | Purpose |
 | ---- | ------- |
 | [`cap/`](cap/) | Python package imported as `aspire.sim.cap.*`; simulator wrappers, task runners, integrations, skill-library helpers, and service launchers. |
-| [`env_configs/`](env_configs/) | YAML configs for LIBERO, Robosuite, and BEHAVIOR tasks. |
+| [`env_configs/`](env_configs/) | YAML configs for LIBERO, Robosuite, BEHAVIOR, and F1TENTH tasks. |
 | [`scripts/`](scripts/) | Suite-specific and common analysis, replay, evaluation, and plotting scripts. |
 | [`docs/`](docs/) | Simulation docs, task notes, and experiment references. |
 | [`.claude/`](.claude/README.md) | Agent runbooks and skills for reproducing simulation experiments. |
@@ -21,6 +21,7 @@ For the paper overview and project-level context, see [the repository README](..
 | LIBERO-PRO, LIBERO-90, LIBERO-Long | `.venv-libero` | Python 3.12; uses upstream LIBERO plus its pinned Robosuite fork. |
 | Robosuite | `.venv-robosuite` | Python 3.10; standalone Robosuite stack. |
 | BEHAVIOR-1K | External Isaac Sim environment | Uses the BEHAVIOR installer and is excluded from the uv workspace. |
+| F1TENTH | `.venv-f1tenth` | Python 3.10; CPU simulator with canonical Levine assets and a privileged ASPIRE API. |
 
 ## Working Conventions
 
@@ -47,6 +48,7 @@ Choose the setup level that matches what you need:
 | Base tools | [Base Repo Setup](#base-repo-setup) | Imports, plotting, analysis, services, and non-simulator utilities. |
 | Robosuite | Base + [Robosuite setup](#suite-setup-robosuite) | Standalone Robosuite tasks and its offscreen smoke test. |
 | LIBERO | Base + [LIBERO setup](#suite-setup-libero) | LIBERO-PRO, LIBERO-90, LIBERO-Long, and the offscreen environment smoke test. |
+| F1TENTH | Base + [F1TENTH setup](#suite-setup-f1tenth) | Native F1TENTH task execution, video capture, and fixed-batch evaluation. |
 | Perception | LIBERO + gated weights and [perception servers](#suite-setup-libero) | SAM3/GraspNet-backed replay and evaluation. |
 | Paper experiments | Relevant suite + perception services | Full coordinator runbooks under [`.claude/`](.claude/README.md). |
 
@@ -280,6 +282,54 @@ Robosuite fix-loop and traced replay configs use the same SAM3, GraspNet, and
 PyRoKi perception servers as LIBERO. Start those servers from a persistent tmux
 session before replay/eval; `.venv-libero` can be used as the perception server
 environment after it is synced with `--extra contactgraspnet`.
+
+### Suite Setup: F1TENTH
+
+F1TENTH uses a dedicated Python 3.10 environment. The setup script initializes
+the pinned simulator submodule, installs its tested modern dependency stack, and
+installs the upstream source without resolving its obsolete Gym 0.19 and NumPy
+1.22 package pins.
+
+```bash
+bash scripts/f1tenth/setup_f1tenth.sh
+```
+
+Run the unit and real-simulator integration tests:
+
+```bash
+.venv/bin/python -m pytest tests/test_f1tenth.py -m "not integration" -q
+PYGLET_HEADLESS=true .venv-f1tenth/bin/python -m pytest \
+  tests/test_f1tenth.py -m integration -q
+```
+
+Run the deliberately weak initial controller through the batch evaluator:
+
+```bash
+PYGLET_HEADLESS=true .venv-f1tenth/bin/python scripts/f1tenth/evaluate_controller.py \
+  --controller .claude/f1tenth/evosearch/initial_controller.py \
+  --seeds 101 \
+  --output outputs/f1tenth/smoke
+```
+
+The initial configuration deliberately exposes full simulator state and the
+reference path. It verifies the native integration and ASPIRE workflow; it is
+not a LiDAR-only or real-world-transfer benchmark. See
+`.claude/f1tenth/CLAUDE.md` for its seed partitions and experiment protocol.
+
+Run a fresh coding-agent campaign through the same coordinator/replay pattern
+used by the other ASPIRE suites:
+
+```bash
+PYGLET_HEADLESS=true .venv-f1tenth/bin/python \
+  scripts/f1tenth/run_codex_campaign.py \
+  --campaign outputs/f1tenth/aspire-campaigns/<campaign-id> \
+  --model gpt-5.5 --reasoning-effort high --max-iterations 5
+```
+
+The launcher relies on the Codex CLI's existing secure authentication. The
+campaign harness fixes the seed partitions, evaluates K=8 candidates, retains
+only validated improvements, records skill promotions, freezes the final
+contract, and permits one resumable held-out evaluation with videos.
 
 ### Setup Troubleshooting
 
