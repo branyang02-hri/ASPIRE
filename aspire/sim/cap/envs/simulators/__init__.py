@@ -7,6 +7,16 @@
 from aspire.sim.cap.envs.base import list_envs, register_env
 
 
+try:
+    from .f1tenth import F1TenthLevineLowLevel, F1TenthSpielbergLowLevel
+except ImportError:
+    _f1tenth_available = False
+else:
+    _f1tenth_available = True
+    register_env("f1tenth_levine_low_level", F1TenthLevineLowLevel)
+    register_env("f1tenth_spielberg_low_level", F1TenthSpielbergLowLevel)
+
+
 # NOTE: Can only have one of Robosuite or LIBERO installed at a time!
 # Using Robosuite run: uv sync --extra robosuite
 try:

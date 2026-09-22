@@ -15,6 +15,7 @@ This directory is organized by simulator suite. Each suite owns its setup conven
 | LIBERO | Library-Size Scaling | [libero/library-size-scaling/](libero/library-size-scaling/) | Frozen snapshot evals and scaling tables/plots |
 | LIBERO | Inference-Time Scaling | [libero/inference-time-scaling/](libero/inference-time-scaling/) | Debug-compute/token-budget scaling on LIBERO-Long-Pro |
 | BEHAVIOR-1K | ASPIRE Fix Loop | [behavior/fix-loop/](behavior/fix-loop/) | Learn skills on seeds 26-35, then run isolated per-seed adaptation on seeds 1-25 |
+| F1TENTH | Privileged Evolutionary Search | [f1tenth/evosearch/](f1tenth/evosearch/) | Program improvement for a verified Levine lap using full simulator telemetry |
 
 ## Suite Entrypoints
 
@@ -23,6 +24,7 @@ This directory is organized by simulator suite. Each suite owns its setup conven
 | Robosuite | [robosuite/CLAUDE.md](robosuite/CLAUDE.md) | [robosuite/api-reference.md](robosuite/api-reference.md) |
 | LIBERO | [libero/CLAUDE.md](libero/CLAUDE.md) | [libero/api-reference.md](libero/api-reference.md) |
 | BEHAVIOR-1K | [behavior/CLAUDE.md](behavior/CLAUDE.md) | [behavior/api-reference.md](behavior/api-reference.md) |
+| F1TENTH | [f1tenth/CLAUDE.md](f1tenth/CLAUDE.md) | [f1tenth/api-reference.md](f1tenth/api-reference.md) |
 
 ## Layout Convention
 

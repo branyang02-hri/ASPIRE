@@ -8,6 +8,23 @@ from .base_api import list_apis, register_api
 
 
 try:
+    from .f1tenth import F1TenthControlApi
+except ImportError:
+    _f1tenth_available = False
+else:
+    _f1tenth_available = True
+    register_api("F1TenthControlApi", F1TenthControlApi)
+
+    try:
+        from .trace_logger import make_traced_api
+    except ImportError:
+        pass
+    else:
+        F1TenthControlApiTraced = make_traced_api(F1TenthControlApi)
+        register_api("F1TenthControlApiTraced", F1TenthControlApiTraced)
+
+
+try:
     from .franka.control import FrankaControlApi
     from .franka.control_privileged import FrankaControlPrivilegedApi
     from .franka.control_reduced import FrankaControlApiReduced
