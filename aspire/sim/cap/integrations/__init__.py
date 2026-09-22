@@ -8,12 +8,13 @@ from .base_api import list_apis, register_api
 
 
 try:
-    from .f1tenth import F1TenthControlApi
+    from .f1tenth import F1TenthControlApi, F1TenthLidarApi
 except ImportError:
     _f1tenth_available = False
 else:
     _f1tenth_available = True
     register_api("F1TenthControlApi", F1TenthControlApi)
+    register_api("F1TenthLidarApi", F1TenthLidarApi)
 
     try:
         from .trace_logger import make_traced_api
@@ -22,6 +23,8 @@ else:
     else:
         F1TenthControlApiTraced = make_traced_api(F1TenthControlApi)
         register_api("F1TenthControlApiTraced", F1TenthControlApiTraced)
+        F1TenthLidarApiTraced = make_traced_api(F1TenthLidarApi)
+        register_api("F1TenthLidarApiTraced", F1TenthLidarApiTraced)
 
 
 try:

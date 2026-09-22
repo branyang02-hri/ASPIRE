@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import ast
 import hashlib
 import json
 import shutil
@@ -31,14 +32,31 @@ TASKS = {
         "config": Path("env_configs/f1tenth/levine_privileged.yaml"),
         "map_base": Path("assets/f1tenth/levine/levine"),
         "reference_path": Path("assets/f1tenth/levine/levine_reference_path.csv"),
+        "initial_controller": Path(".claude/f1tenth/evosearch/initial_controller.py"),
+        "skills": Path(".claude/f1tenth/skills"),
     },
     "spielberg_privileged": {
         "config": Path("env_configs/f1tenth/spielberg_privileged.yaml"),
         "map_base": Path("assets/f1tenth/spielberg/Spielberg_map"),
         "reference_path": Path("assets/f1tenth/spielberg/spielberg_reference_path.csv"),
+        "initial_controller": Path(".claude/f1tenth/evosearch/initial_controller.py"),
+        "skills": Path(".claude/f1tenth/skills"),
+    },
+    "levine_lidar_only": {
+        "config": Path("env_configs/f1tenth/levine_lidar_only.yaml"),
+        "map_base": Path("assets/f1tenth/levine/levine"),
+        "reference_path": Path("assets/f1tenth/levine/levine_reference_path.csv"),
+        "initial_controller": Path(".claude/f1tenth/lidar-only/initial_controller.py"),
+        "skills": Path(".claude/f1tenth/lidar-only/skills"),
+    },
+    "spielberg_lidar_only": {
+        "config": Path("env_configs/f1tenth/spielberg_lidar_only.yaml"),
+        "map_base": Path("assets/f1tenth/spielberg/Spielberg_map"),
+        "reference_path": Path("assets/f1tenth/spielberg/spielberg_reference_path.csv"),
+        "initial_controller": Path(".claude/f1tenth/lidar-only/initial_controller.py"),
+        "skills": Path(".claude/f1tenth/lidar-only/skills"),
     },
 }
-DEFAULT_SKILLS = Path(".claude/f1tenth/skills")
 DEVELOPMENT_SEEDS = list(range(101, 111))
 VALIDATION_SEEDS = list(range(201, 206))
 HELD_OUT_SEEDS = list(range(301, 306))
@@ -50,8 +68,19 @@ BANNED_CANDIDATE_TEXT = (
     "oracle_code",
     "aspire.sim.cap.envs.tasks.f1tenth.",
 )
+LIDAR_ONLY_FORBIDDEN_NAMES = {
+    "APIS",
+    "env",
+    "get_observation",
+    "get_reference_path",
+    "render_overhead",
+}
 
 Evaluator = Callable[..., dict[str, Any]]
+
+
+def is_lidar_only_task(task: str) -> bool:
+    return task in {"levine_lidar_only", "spielberg_lidar_only"}
 
 
 def now() -> str:
@@ -116,6 +145,25 @@ def task_asset_hashes(task: str) -> dict[str, str]:
         "yaml_sha256": sha256_file(yaml_path),
         "reference_path_sha256": sha256_file(reference_path),
     }
+
+
+def validate_controller_source(code: str, *, task: str, label: str) -> None:
+    if any(token in code for token in BANNED_CANDIDATE_TEXT):
+        raise ValueError(f"{label} references the oracle implementation")
+    tree = ast.parse(code, filename=label, mode="exec")
+    if not is_lidar_only_task(task):
+        return
+    used_names = {node.id for node in ast.walk(tree) if isinstance(node, ast.Name)}
+    used_attributes = {
+        node.attr for node in ast.walk(tree) if isinstance(node, ast.Attribute)
+    }
+    forbidden = sorted(
+        (used_names | used_attributes) & LIDAR_ONLY_FORBIDDEN_NAMES
+    )
+    if forbidden:
+        raise ValueError(
+            f"{label} uses APIs unavailable in the LiDAR-only task: {forbidden}"
+        )
 
 
 def load_manifest(campaign: Path) -> dict[str, Any]:
@@ -241,25 +289,29 @@ def initialize_campaign(
     incumbent_dir = campaign / "incumbent"
     incumbent_dir.mkdir()
     code = initial_controller.read_text()
-    if any(token in code for token in BANNED_CANDIDATE_TEXT):
-        raise ValueError("initial controller references the oracle implementation")
-    compile(code, str(initial_controller), "exec")
+    validate_controller_source(code, task=task, label=str(initial_controller))
     incumbent_path = incumbent_dir / "code.py"
     incumbent_path.write_text(code)
     versions = incumbent_dir / "versions"
     versions.mkdir()
     shutil.copy2(incumbent_path, versions / "initial.py")
 
-    source_skills = (SIM_ROOT / DEFAULT_SKILLS).resolve()
+    source_skills = (SIM_ROOT / TASKS[task]["skills"]).resolve()
     working_skills = campaign / "skill-library-working"
     shutil.copytree(source_skills, working_skills)
     (working_skills / "promotions").mkdir(exist_ok=True)
 
-    prompt_paths = [
-        SIM_ROOT / ".claude/f1tenth/evosearch/main-agent-prompt.md",
-        SIM_ROOT / ".claude/f1tenth/evosearch/subagent-prompt.md",
-        SIM_ROOT / ".claude/f1tenth/evosearch/INSTRUCTIONS.md",
-    ]
+    if is_lidar_only_task(task):
+        prompt_paths = [
+            SIM_ROOT / ".claude/f1tenth/lidar-only/api-reference.md",
+            SIM_ROOT / "scripts/f1tenth/run_codex_campaign.py",
+        ]
+    else:
+        prompt_paths = [
+            SIM_ROOT / ".claude/f1tenth/evosearch/main-agent-prompt.md",
+            SIM_ROOT / ".claude/f1tenth/evosearch/subagent-prompt.md",
+            SIM_ROOT / ".claude/f1tenth/evosearch/INSTRUCTIONS.md",
+        ]
     manifest = {
         "schema_version": SCHEMA_VERSION,
         "campaign_id": campaign.name,
@@ -376,7 +428,12 @@ def prepare_iteration(campaign: Path) -> Path:
     return iteration_dir
 
 
-def validate_candidates(iteration_dir: Path, incumbent_hash: str) -> dict[str, dict[str, Any]]:
+def validate_candidates(
+    iteration_dir: Path,
+    incumbent_hash: str,
+    *,
+    task: str = DEFAULT_TASK,
+) -> dict[str, dict[str, Any]]:
     discovered = sorted(
         path.name
         for path in iteration_dir.iterdir()
@@ -398,9 +455,7 @@ def validate_candidates(iteration_dir: Path, incumbent_hash: str) -> dict[str, d
         hypothesis = hypothesis_path.read_text().strip()
         if len(hypothesis) < 20:
             raise ValueError(f"{name} hypothesis is too short")
-        if any(token in code for token in BANNED_CANDIDATE_TEXT):
-            raise ValueError(f"{name} references the oracle implementation")
-        compile(code, str(code_path), "exec")
+        validate_controller_source(code, task=task, label=str(code_path))
         code_hash = sha256_text(code)
         hypothesis_hash = sha256_text(hypothesis.lower())
         if name == "candidate_A" and code_hash != incumbent_hash:
@@ -452,7 +507,11 @@ def run_iteration(
     if iteration != state["iterations_completed"]:
         raise ValueError("prepared iteration does not match campaign state")
     iteration_dir = campaign / f"iterations/iter_{iteration:02d}"
-    candidates = validate_candidates(iteration_dir, state["incumbent"]["code_sha256"])
+    candidates = validate_candidates(
+        iteration_dir,
+        state["incumbent"]["code_sha256"],
+        task=manifest.get("task", DEFAULT_TASK),
+    )
     config = (SIM_ROOT / manifest["config_path"]).resolve()
 
     development_results: dict[str, dict[str, Any]] = {}

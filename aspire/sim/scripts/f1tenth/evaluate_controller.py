@@ -18,6 +18,11 @@ from aspire.sim.cap.envs.configs.loader import DictLoader
 SCHEMA_VERSION = 2
 
 
+def is_restricted_config(config: dict[str, Any]) -> bool:
+    apis = config.get("env", {}).get("cfg", {}).get("apis", [])
+    return any(str(name).startswith("F1TenthLidarApi") for name in apis)
+
+
 def sha256_file(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
@@ -69,33 +74,49 @@ def run_trial(
     trial_dir = output / f"seed_{seed:03d}"
     trial_dir.mkdir(parents=True, exist_ok=True)
     (trial_dir / "code.py").write_text(code)
+    restricted = is_restricted_config(config)
 
     env = instantiate(config["env"])
     try:
         _reset_trace_loggers(env)
         env.enable_video_capture(video, clear=True)
         _, reset_info = env.reset(seed=seed)
+        initial_observation = env.low_level_env.get_observation()
         _, reward, terminated, truncated, info = env.step(code)
         observation = env.low_level_env.get_observation()
-        result = {
+        result: dict[str, Any] = {
             "seed": seed,
-            "start_pose": reset_info["start_pose"],
             "reward": float(reward),
             "completed": bool(info.get("task_completed", False)),
             "collision": bool(observation["collision"]),
-            "progress_fraction": float(observation["lap"]["progress_fraction"]),
-            "ordered_gate_fraction": float(observation["lap"]["ordered_gate_fraction"]),
-            "cross_track_error": float(observation["lap"]["cross_track_error"]),
-            "termination_reason": str(observation["termination_reason"]),
             "terminated": bool(terminated),
             "truncated": bool(truncated),
             "sandbox_rc": int(info["sandbox_rc"]),
             "stdout": info["stdout"],
             "stderr": info["stderr"],
-            "result": env._exec_globals.get("RESULT"),
+            "result": info.get("result", env._exec_globals.get("RESULT")),
         }
+        if not restricted:
+            result.update(
+                {
+                    "start_pose": reset_info.get(
+                        "start_pose", initial_observation["pose"].tolist()
+                    ),
+                    "progress_fraction": float(
+                        observation["lap"]["progress_fraction"]
+                    ),
+                    "ordered_gate_fraction": float(
+                        observation["lap"]["ordered_gate_fraction"]
+                    ),
+                    "cross_track_error": float(
+                        observation["lap"]["cross_track_error"]
+                    ),
+                    "termination_reason": str(observation["termination_reason"]),
+                }
+            )
         _save_trace_loggers(env, trial_dir)
-        imageio.imwrite(trial_dir / "final_frame.png", env.render())
+        if not restricted:
+            imageio.imwrite(trial_dir / "final_frame.png", env.render())
         if video:
             frames = env.get_video_frames(clear=True)
             if frames:

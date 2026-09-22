@@ -300,6 +300,7 @@ class CodeExecutionEnvBase(Env):
             "stderr": exec_result["stderr"],
             "task_prompt": self._task_prompt,
             "task_completed": task_completed,
+            "result": exec_result.get("result"),
         }
         return obs, reward, bool(terminated), bool(truncated), info
 

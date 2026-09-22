@@ -1,13 +1,17 @@
 # F1TENTH Suite Guide
 
-The initial F1TENTH integration is intentionally privileged. Generated programs may use LiDAR, global pose, velocity, collision state, lap progress, the active track reference path, and overhead rendering. Results from these configurations measure ASPIRE integration and program improvement, not LiDAR-only autonomy or real-vehicle transfer.
+F1TENTH has separate privileged and LiDAR-only contracts. The privileged tasks
+expose full simulator state for integration testing. The constrained Levine and
+Spielberg tasks provide only local vehicle sensing and actuation through an
+isolated process.
 
 ## Environment
 
 - Python: `.venv-f1tenth/bin/python`
 - Setup: `bash scripts/f1tenth/setup_f1tenth.sh`
-- Tasks: `levine_privileged`, `spielberg_privileged`
-- Configs: `env_configs/f1tenth/{levine,spielberg}_privileged.yaml`
+- Tasks: `levine_privileged`, `spielberg_privileged`, `levine_lidar_only`, `spielberg_lidar_only`
+- Constrained configs: `env_configs/f1tenth/{levine,spielberg}_lidar_only.yaml`
+- Constrained API: `.claude/f1tenth/lidar-only/api-reference.md`
 - Simulator: pinned `cap/third_party/f1tenth_gym` submodule
 - Canonical assets: `assets/f1tenth/{levine,spielberg}/`
 
@@ -23,7 +27,11 @@ Never inspect or run held-out seeds while developing candidates. Evaluate them o
 
 ## APIs
 
-Read [api-reference.md](api-reference.md). This suite currently permits privileged state. A future reduced interface should be added as a separate API/configuration rather than changing the meaning of this benchmark.
+Read [api-reference.md](api-reference.md) for privileged tasks and
+[lidar-only/api-reference.md](lidar-only/api-reference.md) for the constrained
+task. The constrained controller subprocess cannot mount this repository or use
+the network. The constrained authoring agent receives only a fresh campaign,
+API documentation, and a fixed campaign-command broker.
 
 ## Experiments
 
