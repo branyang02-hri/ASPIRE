@@ -119,7 +119,15 @@ def initialize(
     return campaign, state["incumbent"]["code_sha256"]
 
 
-@pytest.mark.parametrize("task", ["levine_privileged", "spielberg_privileged"])
+@pytest.mark.parametrize(
+    "task",
+    [
+        "levine_privileged",
+        "spielberg_privileged",
+        "levine_lidar_only",
+        "spielberg_lidar_only",
+    ],
+)
 def test_campaign_records_selected_task_and_assets(tmp_path: Path, task: str) -> None:
     campaign, _ = initialize(tmp_path, task=task)
     manifest = load_manifest(campaign)

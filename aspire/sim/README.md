@@ -297,9 +297,10 @@ bash scripts/f1tenth/setup_f1tenth.sh
 Run the unit and real-simulator integration tests:
 
 ```bash
-.venv/bin/python -m pytest tests/test_f1tenth.py -m "not integration" -q
+.venv-f1tenth/bin/python -m pytest \
+  tests/test_f1tenth.py tests/test_f1tenth_lidar_only.py -m "not integration" -q
 PYGLET_HEADLESS=true .venv-f1tenth/bin/python -m pytest \
-  tests/test_f1tenth.py -m integration -q
+  tests/test_f1tenth.py tests/test_f1tenth_lidar_only.py -m integration -q
 ```
 
 Run the deliberately weak initial controller through the batch evaluator:
@@ -311,10 +312,15 @@ PYGLET_HEADLESS=true .venv-f1tenth/bin/python scripts/f1tenth/evaluate_controlle
   --output outputs/f1tenth/smoke
 ```
 
-The initial configurations deliberately expose full simulator state and the
-reference path. It verifies the native integration and ASPIRE workflow; it is
-not a LiDAR-only or real-world-transfer benchmark. See
-`.claude/f1tenth/CLAUDE.md` for its seed partitions and experiment protocol.
+The `levine_privileged` and `spielberg_privileged` configurations deliberately
+expose full simulator state and the reference path. The `levine_lidar_only` and
+`spielberg_lidar_only` tasks instead run generated controllers in a
+bubblewrap-isolated process with only LiDAR,
+local speed/yaw rate, time, termination, and drive/stop RPCs. Its coding-agent
+launcher also mounts only a fresh campaign workspace and fixed command broker;
+maps, evaluator source, old campaigns, and reference controllers are absent.
+Install `bubblewrap` on the host before running the constrained task. See
+`.claude/f1tenth/CLAUDE.md` for seed partitions and the experiment protocol.
 
 Run a fresh coding-agent campaign through the same coordinator/replay pattern
 used by the other ASPIRE suites:
@@ -323,7 +329,7 @@ used by the other ASPIRE suites:
 PYGLET_HEADLESS=true .venv-f1tenth/bin/python \
   scripts/f1tenth/run_codex_campaign.py \
   --campaign outputs/f1tenth/aspire-campaigns/<campaign-id> \
-  --task spielberg_privileged \
+  --task spielberg_lidar_only \
   --model gpt-5.5 --reasoning-effort high --max-iterations 5
 ```
 

@@ -8,12 +8,31 @@ import hashlib
 import json
 import re
 import shutil
+import socket
 import subprocess
 import sys
+import tempfile
+import threading
 from pathlib import Path
+from typing import Any
 
 
 SIM_ROOT = Path(__file__).resolve().parents[2]
+if str(SIM_ROOT) not in sys.path:
+    sys.path.insert(0, str(SIM_ROOT))
+
+from scripts.f1tenth.campaign import (
+    TASKS,
+    finalize_campaign,
+    freeze_campaign,
+    initialize_campaign,
+    load_state,
+    prepare_iteration,
+    run_iteration,
+    verify_campaign,
+)
+
+RESTRICTED_TASKS = {"levine_lidar_only", "spielberg_lidar_only"}
 
 
 def sha256_file(path: Path) -> str | None:
@@ -102,18 +121,354 @@ configuration.
 """.strip()
 
 
+RESTRICTED_CLIENT = r'''#!/usr/bin/env python3
+import argparse
+import json
+import socket
+from pathlib import Path
+
+parser = argparse.ArgumentParser()
+parser.add_argument(
+    "command",
+    choices=("init", "prepare", "run-iteration", "status", "freeze", "finalize", "verify"),
+)
+parser.add_argument("--reason")
+args = parser.parse_args()
+request = {"command": args.command}
+if args.reason is not None:
+    request["reason"] = args.reason
+with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as client:
+    client.connect("/broker/campaign.sock")
+    client.sendall((json.dumps(request) + "\n").encode())
+    response = b""
+    while not response.endswith(b"\n"):
+        chunk = client.recv(65536)
+        if not chunk:
+            break
+        response += chunk
+payload = json.loads(response)
+print(json.dumps(payload, indent=2, sort_keys=True))
+raise SystemExit(0 if payload.get("ok") else 1)
+'''
+
+
+def restricted_guide(task: str) -> str:
+    track = task.removesuffix("_lidar_only").title()
+    return f"""# Restricted {track} Evolutionary Search
+
+Improve a reactive F1TENTH controller until it completes a {track} lap. Controller
+programs receive only the LiDAR-only API in `api-reference.md`; the simulator and
+scorer are deliberately outside this workspace.
+
+The campaign harness, not the coding agent, owns evaluation, candidate ranking,
+incumbent replacement, skill promotion, fixed seed partitions, and held-out access.
+Use only these commands:
+
+```bash
+python3 campaign_cli.py init
+python3 campaign_cli.py prepare
+python3 campaign_cli.py run-iteration
+python3 campaign_cli.py status
+python3 campaign_cli.py freeze --reason "<recorded stop reason>"
+python3 campaign_cli.py finalize
+python3 campaign_cli.py verify
+```
+
+After `prepare`, author complete `code.py`, `hypothesis.md`, and `skill.md` files
+for `campaign/iterations/iter_NN/candidate_B` through `candidate_H`. Candidate A
+is the untouched incumbent. Each new candidate must test a distinct mechanism.
+Read only this campaign's incumbent, accepted skills, hypotheses, decisions, and
+evaluation summaries. Do not try to find maps, simulator source, evaluator source,
+reference paths, old campaigns, or hidden controllers; they are not mounted.
+
+Every controller is a top-level program that uses `get_scan()`, `drive()`, and
+`stop()`, exits when `packet["done"]` is true, and assigns JSON-compatible `RESULT`.
+The harness evaluates all eight candidates on development seeds, validates only a
+strict winner, and retains it only on validation non-regression. Continue while
+state is `active`. When state is `ready_to_freeze`, freeze using its stop reason,
+finalize once, and verify.
+"""
+
+
+def restricted_prompt(task: str, max_iterations: int) -> str:
+    track = task.removesuffix("_lidar_only").title()
+    return f"""
+Run one fresh ASPIRE {track} evolutionary-search campaign in this isolated workspace.
+Read README.md and api-reference.md completely. Initialize through campaign_cli.py
+with the fixed budget of {max_iterations} iterations, then coordinate the full
+candidate/evaluation loop exactly as documented. Work only under /workspace/campaign.
+Do not stop at a plan. The command broker is authoritative and is the only route to
+the simulator and evaluator.
+""".strip()
+
+
+class RestrictedCampaignBroker:
+    """Expose fixed campaign state transitions without exposing evaluator code."""
+
+    def __init__(
+        self,
+        *,
+        socket_path: Path,
+        campaign: Path,
+        initial_controller: Path,
+        task: str,
+        model: str,
+        reasoning_effort: str,
+        max_iterations: int,
+    ) -> None:
+        self.socket_path = socket_path
+        self.campaign = campaign
+        self.initial_controller = initial_controller
+        if task not in RESTRICTED_TASKS:
+            raise ValueError(f"task is not a restricted F1TENTH task: {task}")
+        self.task = task
+        self.model = model
+        self.reasoning_effort = reasoning_effort
+        self.max_iterations = max_iterations
+        self._stop = threading.Event()
+        self._thread: threading.Thread | None = None
+        self._server: socket.socket | None = None
+
+    @staticmethod
+    def _state_view(state: dict[str, Any]) -> dict[str, Any]:
+        incumbent = state.get("incumbent", {})
+
+        def score_view(name: str) -> dict[str, Any] | None:
+            score = incumbent.get(name)
+            if not isinstance(score, dict):
+                return None
+            return {
+                key: score.get(key)
+                for key in (
+                    "successes",
+                    "trial_count",
+                    "collisions",
+                    "mean_reward",
+                    "objective_score",
+                    "valid",
+                )
+            }
+
+        return {
+            "status": state.get("status"),
+            "prepared_iteration": state.get("prepared_iteration"),
+            "iterations_completed": state.get("iterations_completed"),
+            "accepted_count": state.get("accepted_count"),
+            "stop_reason": state.get("stop_reason"),
+            "incumbent": {
+                "code_sha256": incumbent.get("code_sha256"),
+                "source": incumbent.get("source"),
+                "development": score_view("development"),
+                "validation": score_view("validation"),
+            },
+        }
+
+    def _dispatch(self, request: dict[str, Any]) -> Any:
+        command = request.get("command")
+        if command == "init":
+            return self._state_view(
+                initialize_campaign(
+                    campaign=self.campaign,
+                    initial_controller=self.initial_controller,
+                    model=self.model,
+                    reasoning_effort=self.reasoning_effort,
+                    max_iterations=self.max_iterations,
+                    task=self.task,
+                )
+            )
+        if command == "prepare":
+            iteration_dir = prepare_iteration(self.campaign)
+            relative = iteration_dir.relative_to(self.campaign)
+            return {"iteration_dir": f"/workspace/campaign/{relative}"}
+        if command == "run-iteration":
+            decision = run_iteration(self.campaign)
+            return {
+                "iteration": decision["iteration"],
+                "proposed_winner": decision["proposed_winner"],
+                "accepted": decision["accepted"],
+                "reason": decision["reason"],
+                "state": self._state_view(load_state(self.campaign)),
+            }
+        if command == "status":
+            return self._state_view(load_state(self.campaign))
+        if command == "freeze":
+            reason = request.get("reason")
+            if not isinstance(reason, str) or not reason.strip():
+                raise ValueError("freeze requires a non-empty reason")
+            return self._state_view(freeze_campaign(self.campaign, reason))
+        if command == "finalize":
+            return self._state_view(finalize_campaign(self.campaign))
+        if command == "verify":
+            return verify_campaign(self.campaign)
+        raise ValueError(f"unsupported campaign command: {command}")
+
+    def _serve(self) -> None:
+        if self.socket_path.exists():
+            self.socket_path.unlink()
+        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as server:
+            self._server = server
+            server.bind(str(self.socket_path))
+            server.listen(4)
+            server.settimeout(0.25)
+            while not self._stop.is_set():
+                try:
+                    connection, _ = server.accept()
+                except TimeoutError:
+                    continue
+                with connection:
+                    try:
+                        handle = connection.makefile("r", encoding="utf-8")
+                        line = handle.readline(1_000_001)
+                        if not line or len(line) > 1_000_000:
+                            raise ValueError("invalid broker request")
+                        request = json.loads(line)
+                        if not isinstance(request, dict):
+                            raise TypeError("broker request must be an object")
+                        payload = {"ok": True, "result": self._dispatch(request)}
+                    except BaseException as exc:
+                        payload = {
+                            "ok": False,
+                            "error": f"{type(exc).__name__}: {exc}",
+                        }
+                    connection.sendall(
+                        (json.dumps(payload, default=str) + "\n").encode()
+                    )
+            self._server = None
+
+    def start(self) -> None:
+        self._thread = threading.Thread(target=self._serve, daemon=True)
+        self._thread.start()
+        for _ in range(100):
+            if self.socket_path.exists():
+                return
+            self._stop.wait(0.01)
+        raise RuntimeError("restricted campaign broker did not start")
+
+    def close(self) -> None:
+        self._stop.set()
+        if self._thread is not None:
+            self._thread.join(timeout=2)
+        self.socket_path.unlink(missing_ok=True)
+
+
+def create_restricted_workspace(campaign: Path, task: str) -> Path:
+    workspace = SIM_ROOT / "outputs/f1tenth/agent-workspaces" / campaign.name
+    if workspace.exists() and any(workspace.iterdir()):
+        raise ValueError(f"restricted agent workspace is not empty: {workspace}")
+    workspace.mkdir(parents=True, exist_ok=True)
+    (workspace / "campaign").mkdir()
+    (workspace / "README.md").write_text(restricted_guide(task))
+    shutil.copy2(
+        SIM_ROOT / ".claude/f1tenth/lidar-only/api-reference.md",
+        workspace / "api-reference.md",
+    )
+    client = workspace / "campaign_cli.py"
+    client.write_text(RESTRICTED_CLIENT)
+    client.chmod(0o755)
+    return workspace
+
+
+def restricted_codex_command(
+    *,
+    codex: Path,
+    workspace: Path,
+    campaign: Path,
+    broker_dir: Path,
+    auth_dir: Path,
+    model: str,
+    reasoning_effort: str,
+) -> list[str]:
+    bwrap = shutil.which("bwrap")
+    if bwrap is None:
+        raise RuntimeError("bubblewrap is required for restricted agent execution")
+    command = [
+        bwrap,
+        "--die-with-parent",
+        "--new-session",
+        "--unshare-pid",
+        "--unshare-ipc",
+        "--unshare-uts",
+    ]
+    for system_path in ("/usr", "/lib", "/lib64", "/bin"):
+        if Path(system_path).exists():
+            command.extend(("--ro-bind", system_path, system_path))
+    for system_file in (
+        "/etc/hosts",
+        "/etc/nsswitch.conf",
+        "/etc/resolv.conf",
+        "/etc/ssl",
+        "/etc/ca-certificates",
+    ):
+        if Path(system_file).exists():
+            command.extend(("--ro-bind", system_file, system_file))
+    command.extend(
+        (
+            "--proc",
+            "/proc",
+            "--dev",
+            "/dev",
+            "--tmpfs",
+            "/tmp",
+            "--dir",
+            "/opt",
+            "--ro-bind",
+            str(codex.resolve()),
+            "/opt/codex",
+            "--bind",
+            str(workspace),
+            "/workspace",
+            "--bind",
+            str(campaign),
+            "/workspace/campaign",
+            "--ro-bind",
+            str(broker_dir),
+            "/broker",
+            "--bind",
+            str(auth_dir),
+            "/codex-home",
+            "--chdir",
+            "/workspace",
+            "--setenv",
+            "HOME",
+            "/tmp",
+            "--setenv",
+            "CODEX_HOME",
+            "/codex-home",
+            "/opt/codex",
+            "exec",
+            "-m",
+            model,
+            "-c",
+            f'model_reasoning_effort="{reasoning_effort}"',
+            "-c",
+            "shell_environment_policy.inherit=none",
+            "--dangerously-bypass-approvals-and-sandbox",
+            "--ignore-user-config",
+            "--ignore-rules",
+            "--ephemeral",
+            "--skip-git-repo-check",
+            "--json",
+            "--output-last-message",
+            "/workspace/final.txt",
+            "-C",
+            "/workspace",
+            "-",
+        )
+    )
+    return command
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--campaign", type=Path, required=True)
     parser.add_argument(
         "--initial-controller",
         type=Path,
-        default=Path(".claude/f1tenth/evosearch/initial_controller.py"),
     )
     parser.add_argument("--max-iterations", type=int, default=5)
     parser.add_argument(
         "--task",
-        choices=("levine_privileged", "spielberg_privileged"),
+        choices=tuple(sorted(TASKS)),
         default="levine_privileged",
     )
     parser.add_argument("--model", default="gpt-5.5")
@@ -127,7 +482,8 @@ def main() -> None:
     if campaign.exists() and any(campaign.iterdir()):
         raise SystemExit(f"campaign path is not empty: {campaign}")
     campaign.mkdir(parents=True, exist_ok=True)
-    initial_controller = args.initial_controller.resolve()
+    initial_controller_arg = args.initial_controller or TASKS[args.task]["initial_controller"]
+    initial_controller = initial_controller_arg.resolve()
     if not initial_controller.is_file():
         raise SystemExit(f"initial controller does not exist: {initial_controller}")
 
@@ -135,35 +491,100 @@ def main() -> None:
     log_dir.mkdir(parents=True, exist_ok=True)
     event_log = log_dir / f"{campaign.name}.jsonl"
     final_message = log_dir / f"{campaign.name}-final.txt"
-    prompt = build_prompt(
-        campaign, initial_controller, args.max_iterations, args.task
-    )
-    command = [
-        codex,
-        "exec",
-        "-m",
-        args.model,
-        "-c",
-        f'model_reasoning_effort="{args.reasoning_effort}"',
-        "--sandbox",
-        "workspace-write",
-        "--json",
-        "--output-last-message",
-        str(final_message),
-        "-C",
-        str(SIM_ROOT),
-        "-",
-    ]
-    with event_log.open("w") as log:
-        process = subprocess.run(
-            command,
-            input=prompt,
-            text=True,
-            stdout=log,
-            stderr=subprocess.STDOUT,
-            cwd=SIM_ROOT,
-            check=False,
+    restricted = args.task in RESTRICTED_TASKS
+    broker: RestrictedCampaignBroker | None = None
+    broker_dir: Path | None = None
+    auth_dir: Path | None = None
+    auth_file: Path | None = None
+    if restricted:
+        workspace = create_restricted_workspace(campaign, args.task)
+        broker_dir = Path(tempfile.mkdtemp(prefix="aspire-f1tenth-broker-"))
+        auth_dir = Path(tempfile.mkdtemp(prefix="aspire-f1tenth-auth-"))
+        auth_dir.chmod(0o700)
+        auth_file = auth_dir / "auth.json"
+        shutil.copy2(Path.home() / ".codex/auth.json", auth_file)
+        auth_file.chmod(0o600)
+        broker = RestrictedCampaignBroker(
+            socket_path=broker_dir / "campaign.sock",
+            campaign=campaign,
+            initial_controller=initial_controller,
+            task=args.task,
+            model=args.model,
+            reasoning_effort=args.reasoning_effort,
+            max_iterations=args.max_iterations,
         )
+        broker.start()
+        prompt = restricted_prompt(args.task, args.max_iterations)
+        command = restricted_codex_command(
+            codex=Path(codex),
+            workspace=workspace,
+            campaign=campaign,
+            broker_dir=broker_dir,
+            auth_dir=auth_dir,
+            model=args.model,
+            reasoning_effort=args.reasoning_effort,
+        )
+        process_env = {
+            "PATH": "/usr/bin:/bin",
+            "SSL_CERT_FILE": "/etc/ssl/certs/ca-certificates.crt",
+        }
+        run_cwd = workspace
+    else:
+        workspace = None
+        prompt = build_prompt(
+            campaign, initial_controller, args.max_iterations, args.task
+        )
+        command = [
+            codex,
+            "exec",
+            "-m",
+            args.model,
+            "-c",
+            f'model_reasoning_effort="{args.reasoning_effort}"',
+            "--sandbox",
+            "workspace-write",
+            "--json",
+            "--output-last-message",
+            str(final_message),
+            "-C",
+            str(SIM_ROOT),
+            "-",
+        ]
+        process_env = None
+        run_cwd = SIM_ROOT
+    try:
+        auth_cleanup = None
+        if auth_file is not None:
+            # Codex reads authentication before its first model request. Remove the
+            # pathname immediately afterward so agent-authored commands cannot read it.
+            auth_cleanup = threading.Timer(1.0, auth_file.unlink, kwargs={"missing_ok": True})
+            auth_cleanup.start()
+        with event_log.open("w") as log:
+            process = subprocess.run(
+                command,
+                input=prompt,
+                text=True,
+                stdout=log,
+                stderr=subprocess.STDOUT,
+                cwd=run_cwd,
+                env=process_env,
+                check=False,
+            )
+    finally:
+        if "auth_cleanup" in locals() and auth_cleanup is not None:
+            auth_cleanup.cancel()
+        if auth_file is not None:
+            auth_file.unlink(missing_ok=True)
+        if broker is not None:
+            broker.close()
+        if broker_dir is not None:
+            shutil.rmtree(broker_dir, ignore_errors=True)
+        if auth_dir is not None:
+            shutil.rmtree(auth_dir, ignore_errors=True)
+    if restricted and workspace is not None:
+        restricted_final = workspace / "final.txt"
+        if restricted_final.is_file():
+            shutil.copy2(restricted_final, final_message)
     errors = []
     manifest_path = campaign / "manifest.json"
     if process.returncode == 0 and not manifest_path.is_file():
@@ -216,6 +637,7 @@ def main() -> None:
         "reasoning_effort": args.reasoning_effort,
         "max_iterations": args.max_iterations,
         "task": args.task,
+        "restricted_agent_workspace": str(workspace) if workspace else None,
         "codex_version": codex_version,
         "return_code": process.returncode,
         "errors": errors,
