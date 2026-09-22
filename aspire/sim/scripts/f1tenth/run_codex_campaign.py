@@ -43,7 +43,7 @@ def trace_policy_errors(event_log: Path, campaign: Path) -> list[str]:
             continue
         command = item.get("command", "")
         for referenced_id in re.findall(
-            rf"{re.escape(marker)}([^/\s'\"]+)", command
+            rf"{re.escape(marker)}([^/\s'\";|&()]+)", command
         ):
             if referenced_id != campaign.name:
                 errors.append(

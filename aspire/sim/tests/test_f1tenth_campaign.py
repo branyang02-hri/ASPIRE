@@ -215,3 +215,27 @@ def test_agent_trace_rejects_cross_lineage_and_direct_held_out_access(
 
     assert any("another campaign" in error for error in errors)
     assert any("held-out seed" in error for error in errors)
+
+
+def test_agent_trace_accepts_shell_delimiter_after_current_campaign(
+    tmp_path: Path,
+) -> None:
+    campaign = tmp_path / "current-campaign"
+    event_log = tmp_path / "events.jsonl"
+    event_log.write_text(
+        json.dumps(
+            {
+                "type": "item.started",
+                "item": {
+                    "type": "command_execution",
+                    "command": (
+                        "CAMPAIGN=outputs/f1tenth/aspire-campaigns/current-campaign; "
+                        "cat $CAMPAIGN/report.md"
+                    ),
+                },
+            }
+        )
+        + "\n"
+    )
+
+    assert trace_policy_errors(event_log, campaign) == []
